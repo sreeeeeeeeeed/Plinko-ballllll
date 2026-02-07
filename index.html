@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Plinko</title>
+    <style>
+        :root {
+            --bg-color: #0f1923;
+            --card-bg: #1a242d;
+            --accent: #00e701;
+            --text: #ffffff;
+            --danger: #ff4d4d;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text);
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        h1 { margin-top: 20px; font-weight: 700; }
+
+        .container {
+            display: flex;
+            gap: 20px;
+            padding: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .controls {
+            background-color: var(--card-bg);
+            padding: 20px;
+            border-radius: 8px;
+            width: 300px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            height: fit-content;
+        }
+
+        .stat-box {
+            background: rgba(0,0,0,0.2);
+            padding: 10px;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+        }
+        input[type="number"] {
+            background: rgba(0,0,0,0.2);
+            border: 1px solid #333;
+            color: white;
+            padding: 10px;
+            border-radius: 4px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: var(--accent);
+            color: var(--bg-color);
+            border: none;
+            padding: 15px;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 1.1em;
+            transition: transform 0.1s;
+        }
+        button:active { transform: scale(0.98); }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+
+        .game-board {
+            position: relative;
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            width: 800px;
+            padding: 0;
+            box-sizing: border-box;
+            overflow: hidden; 
+        }
+
+        .buckets {
+            display: flex;
+            justify-content: center;
+            padding: 0;
+            gap: 0;
+            box-sizing: border-box;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 30px;
+            z-index: 2; /* Ensure buckets are above canvas */
+        }
+
+        .bucket {
+            font-size: 10px;
+            font-weight: bold;
+            color: #000;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            flex: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            transition: transform 0.1s;
+        }
+
+        .bucket.hit {
+            transform: scale(1.1) translateY(-5px);
+            filter: brightness(1.2);
+            z-index: 10;
+        }
+
+        .history {
+            margin-top: 10px;
+            display: flex;
+            gap: 5px;
+            height: 20px;
+            overflow: hidden;
+            justify-content: flex-end;
+        }
+        .hist-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Plinko</h1>
+
+    <div class="container">
+        <div class="controls">
+            <div class="stat-box">
+                <span>Balance</span>
+                <span id="balanceDisplay">$1000.00</span>
+            </div>
+            <div>
+                <label>Bet Amount</label>
+                <input type="number" id="betAmount" value="10" min="1">
+            </div>
+            <button id="dropBtn">Drop Ball</button>
+            <div class="stat-box">
+                <span>Profit/Loss</span>
+                <span id="netProfit" style="color: white;">$0.00</span>
+            </div>
+            <div style="font-size: 0.8em; color: #888; margin-top: 10px;">
+                <p>Credit card connected: <strong>LOUIS</strong></p>
+                <p>Card No: <strong>8812 2448 4019 2194</strong></p>
+            </div>
+            <div class="history" id="historyBar"></div>
+        </div>
+
+        <div class="game-board">
+            <canvas id="plinkoCanvas" width="800" height="600"></canvas>
+            <div class="buckets" id="bucketContainer"></div>
+        </div>
+    </div>
+
+<script>
+    // --- Constants ---
+    const WIDTH = 800;
+    const HEIGHT = 600;
+    
+    // IMPORTANT: 18 Rows generates 18 pegs on the final row.
+    // 18 pegs create 17 spaces (buckets), which matches your multipliers exactly.
+    const ROWS = 18;             
+    
+    // Adjusted sizes for cleaner look with tighter spacing
+   const PEG_RADIUS = 5;
+    const BALL_RADIUS = 9; // Slightly larger for better visual
+    const FRICTION = 0.99; // Air resistance
+    const GRAVITY = 0.25;
+    const BOUNCINESS = 0.6; // Energy kept after hitting a peg (0 to 1)
+
+    // 17 Multipliers
+    const MULTIPLIERS = [110,41,10,5,3,1.5,1,0.3,0.2,0.3,1,1.5,3,5,10,41,110];
+
+    function getMultColor(val) {
+        if (val >= 10) return '#ff0044';
+        if (val >= 3) return '#ff8800';
+        if (val >= 1) return '#ffa500';
+        return '#ffff00';
+    }
+
+    // --- State ---
+    let balance = 1000.00;
+    let startBalance = 1000.00;
+    let pegs = [];
+    let buckets = [];
+    let boundaries = []; 
+
+    // Elements
+    const canvas = document.getElementById('plinkoCanvas');
+    const ctx = canvas.getContext('2d');
+    const balanceDisplay = document.getElementById('balanceDisplay');
+    const netProfitDisplay = document.getElementById('netProfit');
+    const dropBtn = document.getElementById('dropBtn');
+    const betInput = document.getElementById('betAmount');
+    const bucketContainer = document.getElementById('bucketContainer');
+    const historyBar = document.getElementById('historyBar');
+
+    let balls = [];
+
+    // --- Setup pegs & buckets ---
+    function init() {
+        pegs = [];
+        buckets = [];
+        boundaries = [];
+        bucketContainer.innerHTML = '';
+
+        // --- THE FIX ---
+        // spacingX: 45px. Wide enough to span the 800px width (45 * 17 = 765px).
+        // spacingY: 32px. Short enough to fit 18 rows into 600px height (32 * 18 = ~576px).
+        const spacingX = 45; 
+        const spacingY = 32; 
+        const startY = 18;
+
+        // Build triangular peg lattice
+        for (let row = 0; row < ROWS; row++) {
+            const pegsThisRow = row + 1;
+            if (pegsThisRow >2){
+            const rowWidth = (pegsThisRow - 1) * spacingX;
+            const startX = (WIDTH - rowWidth) / 2;
+
+            for (let col = 0; col < pegsThisRow; col++) {
+                const x = startX + col * spacingX;
+                const y = startY + row * spacingY; // Uses tighter vertical spacing
+                pegs.push({ x, y, r: PEG_RADIUS });
+            }
+        }
+        }
+
+        // Compute final-row peg Xs (sorted) to define our buckets
+        // This finds the 18 pegs at the very bottom
+        const finalRowIndex = ROWS - 1;
+        const finalY = startY + finalRowIndex * spacingY;
+        
+        const finalRowPegs = pegs
+            .filter(p => Math.abs(p.y - finalY) < 5)
+            .sort((a,b) => a.x - b.x);
+        
+        const xs = finalRowPegs.map(p => p.x);
+        
+        // The pegs ARE the boundaries. 18 pegs = 17 gaps.
+        // shift bucket boundaries right by half a peg (half the horizontal spacing)
+    boundaries =xs;
+        bucketContainer.style.left = boundaries[0] + 'px';
+bucketContainer.style.right = 'auto';
+        // Visual debug check
+        if (boundaries.length !== ROWS) {
+            console.error("Layout Error: Visible rows don't match logical rows. Check spacingY.");
+        }
+
+        // Create bucket UI
+        for (let i = 0; i < boundaries.length - 1; i++) {
+            // Safety check for multiplier array length
+            if (i >= MULTIPLIERS.length) break;
+
+            const mult = MULTIPLIERS[i];
+            const width = boundaries[i+1] - boundaries[i];
+
+            const div = document.createElement('div');
+            div.className = 'bucket';
+            div.id = `bucket-${i}`;
+            div.style.width = `${width}px`;
+            div.innerText = mult ? `${mult}x` : '';
+            div.style.backgroundColor = getMultColor(mult || 0);
+            
+            bucketContainer.appendChild(div);
+
+            buckets.push({
+                index: i,
+                left: boundaries[i],
+                right: boundaries[i+1],
+                mult: mult
+            });
+        }
+        
+        // Center the buckets container to match the pyramid exactly
+        const totalWidth = boundaries[boundaries.length-1] - boundaries[0];
+        bucketContainer.style.width = `${totalWidth}px`;
+    }
+
+    // --- Physics ---
+    class Ball {
+        constructor(bet) {
+            this.bet = bet;
+            this.r = BALL_RADIUS;
+            this.x = WIDTH/2 + (Math.random()*2 - 1); 
+            this.y = 10;
+            this.vx = 0;
+            this.vy = 0;
+            this.active = true;
+            this.color = '#fff';
+        }
+
+        update() {
+            if (!this.active) return;
+
+            this.vy += GRAVITY;
+            this.x += this.vx;
+            this.y += this.vy;
+
+            this.vx *= FRICTION;
+            this.vy *= FRICTION;
+
+            // Walls
+            if (this.x < this.r) { this.x = this.r; this.vx *= -0.5; }
+            if (this.x > WIDTH - this.r) { this.x = WIDTH - this.r; this.vx *= -0.5; }
+
+            // Peg Collisions
+            for (let peg of pegs) {
+                const dx = this.x - peg.x;
+                const dy = this.y - peg.y;
+                const distSq = dx*dx + dy*dy;
+                const minDist = this.r + peg.r;
+
+                if (distSq < minDist * minDist) {
+                    const dist = Math.sqrt(distSq) || 0.001;
+                    let nx = dx / dist;
+                    let ny = dy / dist;
+
+                    // Separate
+                    const overlap = minDist - dist;
+                    this.x += nx * overlap;
+                    this.y += ny * overlap;
+
+                    // Reflect
+                    const dot = this.vx*nx + this.vy*ny;
+                    this.vx = (this.vx - 2*dot*nx) * BOUNCINESS;
+                    this.vy = (this.vy - 2*dot*ny) * BOUNCINESS;
+
+                    // Jitter
+                    this.vx += (Math.random() - 0.5) * 0.2;
+                }
+            }
+
+            // Finish Condition
+            // Ball is done when it passes the visual bucket line
+            if (this.y > HEIGHT - 30) {
+                this.finish();
+            }
+        }
+
+        draw() {
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.r, 0, Math.PI*2);
+            ctx.fillStyle = this.color;
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = this.color;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.closePath();
+        }
+
+        finish() {
+            this.active = false;
+            
+            // Map x position to bucket
+            let index = -1;
+            for (let i = 0; i < buckets.length; i++) {
+                if (this.x >= buckets[i].left && this.x < buckets[i].right) {
+                    index = i;
+                    break;
+                }
+            }
+            // Edges fallback
+            if (index === -1) {
+                if (this.x < buckets[0].left) index = 0;
+                else index = buckets.length - 1;
+            }
+
+            const landed = buckets[index];
+            const win = this.bet * (landed.mult || 0);
+            
+            updateBalance(win);
+            animateBucketHit(index);
+            addHistoryDot(landed.mult);
+        }
+    }
+
+    // --- UI Helpers ---
+    function updateBalance(amount) {
+        balance += amount;
+        balanceDisplay.innerText = '$' + balance.toFixed(2);
+        const totalProfit = balance - startBalance;
+        netProfitDisplay.innerText = (totalProfit >= 0 ? '+' : '') + '$' + totalProfit.toFixed(2);
+        netProfitDisplay.style.color = totalProfit >= 0 ? '#00e701' : '#ff4d4d';
+        
+        if (balance <= 0) {
+            dropBtn.innerText = "Bankrupt";
+        }
+    }
+
+    function animateBucketHit(index) {
+        const el = document.getElementById(`bucket-${index}`);
+        if (!el) return;
+        el.classList.add('hit');
+        setTimeout(()=>el.classList.remove('hit'), 200);
+    }
+
+    function addHistoryDot(mult) {
+        const dot = document.createElement('div');
+        dot.className = 'hist-dot';
+        dot.style.backgroundColor = getMultColor(mult||0);
+        historyBar.appendChild(dot);
+        if (historyBar.children.length > 20) historyBar.removeChild(historyBar.firstChild);
+    }
+
+    // --- Loop ---
+    function animate() {
+        ctx.clearRect(0,0,WIDTH,HEIGHT);
+
+        // Draw pegs
+        ctx.fillStyle = 'rgba(255,255,255,0.2)';
+        for (let p of pegs) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+            ctx.fill();
+        }
+
+        // Draw balls
+        for (let i = balls.length - 1; i >= 0; i--) {
+            const b = balls[i];
+            b.update();
+            b.draw();
+            if (!b.active) balls.splice(i,1);
+        }
+
+        requestAnimationFrame(animate);
+    }
+
+    // Inputs
+    dropBtn.addEventListener('mousedown', ()=>dropBall());
+    document.addEventListener('keydown', (e)=>{ if (e.code === 'Space') dropBall(); });
+
+    function dropBall() {
+        if (balance <= 0) return;
+        const bet = parseFloat(betInput.value);
+        if (isNaN(bet) || bet <= 0) return;
+        if (bet > balance) return;
+
+        balance -= bet;
+        updateBalance(0); 
+        balls.push(new Ball(bet));
+    }
+
+    init();
+    animate();
+
+</script>
+</body>
+</html>
